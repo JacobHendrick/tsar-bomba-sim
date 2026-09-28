@@ -26,7 +26,7 @@ cmake --build build -j
 ./build/tsar --grid 64 --iters 20 --steps 96    # lighter settings for integrated GPUs / Mesa llvmpipe
 ./build/tsar --shot 480 cloud.png         # hidden window: simulate to t = 480 s, save PNG, exit
 ```
-Options: `--preset 1|2`, `--grid N` (N x N/2 x N cells), `--iters N` (Jacobi sweeps), `--steps N` (raymarch samples), `--size W H`.
+Options: `--preset 1|2`, `--grid N` (N x N/2 x N cells), `--iters N` , `--steps N` (raymarch samples), `--size W H`.
 Use `--help` for a usage summary. Grid size must be a multiple of 8 from 16 to 256;
 iterations 1..1000, samples 1..4096, and window dimensions 8..8192. Larger settings use substantially more GPU memory.
 Screenshot time must be finite and nonnegative. Invalid arguments and failed PNG writes return a nonzero exit code.
@@ -78,8 +78,3 @@ For cleaner cloud edges in still images, increase raymarch samples, for example:
   USSA-76 background to 86 km. theta' holds heat per volume at ambient density; a separate incandescent-temperature tracer
   cools as dT/dt = -k (T^4 - T_a^4) and drives glow. Ground dust/snow is raised by the blast front and the afterwinds.
 - Domain: 160 x 80 km for 50 Mt, scaled by (W/50)^0.25.
-## Limitations
-Qualitative visual model, not a validated code. Collocated grid with central differences, coarse cells (1.25 km at N=128),
-and a fixed Jacobi iteration count. Heat seeding uses a calibrated multiplier (`heat` in physics.hpp) because coarse cells
-over-mix the core; with it the default grid reaches roughly 50 km cloud tops for 50 Mt (observed about 60+ km) and 20 km for 1 Mt.
-No moisture or condensation, no wind, no thermal-pulse effects on the ground.
