@@ -1,0 +1,24 @@
+// Rounded cellular detail for the renderer only; never feeds back into the fluid.
+layout(rgba16f, binding = 0) uniform writeonly image3D oBillows;
+float cellular(vec3 p, float period) {
+  vec3 cell = floor(p), local = fract(p);
+  float nearest = 3.0;
+  for (int z = -1; z <= 1; ++z)
+    for (int y = -1; y <= 1; ++y)
+      for (int x = -1; x <= 1; ++x) {
+        vec3 offset = vec3(x,y,z), index = mod(cell + offset, period);
+        vec3 jitter = vec3(hash(index), hash(index + 31.7), hash(index + 67.1));
+        vec3 delta = offset + 0.15 + 0.7 * jitter - local;
+        nearest = min(nearest, dot(delta,delta));
+      }
+  return 1.0 - clamp(sqrt(nearest),0.0,1.0);
+}
+void main() {
+  ivec3 c = gid();
+  if (outside(c)) return;
+  vec3 p = (vec3(c) + 0.5) / vec3(uN);
+  float coarse = cellular(p * 4.0,4.0);
+  float medium = cellular(p * 8.0 + 3.0,8.0);
+  float fine = cellular(p * 16.0 + 7.0,16.0);
+  imageStore(oBillows,c,vec4(coarse,medium,fine,0.6*coarse+0.3*medium+0.1*fine));
+}

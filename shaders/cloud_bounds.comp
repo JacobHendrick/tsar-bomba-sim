@@ -1,0 +1,14 @@
+layout(binding=1) uniform sampler3D uScal;
+layout(std430,binding=0) buffer Bounds { uint bounds[6]; };
+shared uint lo[3], hi[3];
+void main() {
+  uint index=gl_LocalInvocationIndex;
+  if(index<3u) { lo[index]=uint(uN[index]); hi[index]=0u; }
+  barrier();
+  ivec3 c=gid();
+  if(!outside(c) && texelFetch(uScal,c,0).y>0.06) {
+    for(int i=0;i<3;++i) { atomicMin(lo[i],uint(c[i])); atomicMax(hi[i],uint(c[i]+1)); }
+  }
+  barrier();
+  if(index<3u) { atomicMin(bounds[index],lo[index]); atomicMax(bounds[index+3u],hi[index]); }
+}

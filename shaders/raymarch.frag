@@ -4,6 +4,10 @@ layout(binding = 1) uniform sampler3D uScal;
 layout(binding = 2) uniform sampler3D uLight;
 layout(binding = 3) uniform sampler3D uGlow;
 layout(binding = 4) uniform sampler3D uDetail;
+layout(binding = 5) uniform sampler2D uSceneColor;
+layout(binding = 6) uniform sampler2D uSceneDepth;
+layout(binding = 8) uniform sampler3D uBillows;
+uniform vec3 uCloudScale;
 uniform mat4 uInvViewProj;
 uniform vec3 uCam, uSunDir, uSun;  // uSun: sun irradiance (W/m^2)
 uniform vec4 uFb, uFbParams;       // analytic fireball centre+radius; base y, T, visibility, Rmax
@@ -19,14 +23,18 @@ vec3 sky(vec3 d) {
 }
 float sceneScale() { return uSize.x / 160000.0; }
 float detailNoise(vec3 p, float lod) { return textureLod(uDetail, p, lod).a; }
-// Integrate an exponential-height haze along the viewing segment.
+float airDensity(float h0, float h1, float height) {
+  float delta = (h1-h0)/height;
+  return abs(delta) < 0.01 ? exp(-0.5*(h0+h1)/height)
+    : (exp(-h0/height)-exp(-h1/height))/delta;
+}
+// Two height layers give distant terrain aerial perspective without a flat fog wall.
 vec3 airTransmittance(vec3 p) {
   float distanceToEye = length(p - uCam);
   float h0 = max(uCam.y, 0.0), h1 = max(p.y, 0.0);
-  float delta = (h1 - h0) / 8500.0;
-  float density = abs(delta) < 0.01 ? exp(-0.5 * (h0 + h1) / 8500.0)
-    : (exp(-h0 / 8500.0) - exp(-h1 / 8500.0)) / delta;
-  return exp(-vec3(2.2, 3.6, 6.0) * 1e-6 * distanceToEye * density);
+  vec3 opticalDepth = vec3(3.8,8.5,18.0)*1e-6*airDensity(h0,h1,8500.0)
+    + vec3(12e-6)*airDensity(h0,h1,1800.0);
+  return exp(-distanceToEye * opticalDepth);
 }
 vec3 aerial(vec3 radiance, vec3 p, vec3 d) {
   vec3 tr = airTransmittance(p);
@@ -37,11 +45,11 @@ float terrainHeight(vec2 p) {
   float scale = sceneScale();
   // Smooth interpolation here avoids the planar facets of a low-resolution
   // noise texture when taking height derivatives for the surface normal.
-  vec3 q = vec3(p.x, 1730.0 * scale, p.y) / (22000.0 * scale);
+  vec3 q = vec3(p.x * 0.65, 1730.0 * scale, p.y) / (52000.0 * scale);
   float broad = noise(q);
-  float ridge = 1.0 - abs(2.0 * noise(q * 2.7 + 17.3) - 1.0);
+  float ridge = 1.0 - abs(2.0 * noise(q * 1.7 + 17.3) - 1.0);
   float mountains = smoothstep(0.18 * uSize.x, 0.38 * uSize.x, length(p));
-  return scale * (25.0 + 180.0 * broad + mountains * (1700.0 * broad * ridge * ridge));
+  return scale * (25.0 + 100.0 * broad + mountains * (650.0 * broad * ridge * ridge));
 }
 float terrainHit(vec3 o, vec3 d) {
   float scale = sceneScale(), top = 2400.0 * scale;
@@ -56,7 +64,7 @@ float terrainHit(vec3 o, vec3 d) {
     vec3 p = o + t * d;
     if (p.y <= terrainHeight(p.xz)) {
       float a = previous, b = t;
-      for (int j = 0; j < 6; ++j) {
+      for (int j = 0; j < 14; ++j) {
         float mid = 0.5 * (a + b);
         vec3 m = o + mid * d;
         if (m.y > terrainHeight(m.xz)) a = mid; else b = mid;
@@ -75,23 +83,30 @@ vec3 terrainNormal(vec2 p) {
 // Erode and warp the rendered boundary below the solver's cell size. World-space
 // coordinates and continuous drift keep the texture stable under camera movement.
 vec4 cloudSample(vec3 p, float footprint) {
-  vec3 q = (p - vec3(0, 12.0 * uTime, 0)) / (16000.0 * sceneScale());
-  float lod = max(0.0, log2(max(footprint, 1.0) * 128.0 / (16000.0 * sceneScale())));
+  // Work in unscaled volume coordinates: detail grows with the cloud rather
+  // than sliding through it as the presentation envelope changes.
+  vec3 source = p / uCloudScale;
+  vec3 q = (source - vec3(0, 12.0 * uTime, 0)) / (16000.0 * sceneScale());
+  float sourceFootprint = footprint / min(min(uCloudScale.x,uCloudScale.y),uCloudScale.z);
+  float lod = max(0.0, log2(max(sourceFootprint, 1.0) * 128.0 / (16000.0 * sceneScale())));
   vec4 detail = textureLod(uDetail, q, lod);
-  vec3 warp = (detail.rgb - 0.5) * (0.85 * cellSize());
-  vec3 w = toUvw(p + warp);
+  vec4 lobes = textureLod(uBillows,q * 0.62 + (detail.rgb-0.5)*0.07,lod);
+  vec3 warp = (detail.rgb - 0.5) * (0.6 * cellSize());
+  warp.y += (lobes.r-0.5) * 3.2 * cellSize();
+  vec3 w = toUvw(source + warp);
   if (any(lessThan(w, vec3(0))) || any(greaterThan(w, vec3(1)))) return vec4(0);
   vec4 s = texture(uScal, w);
   float fine = detailNoise(q * 3.13 + 0.17, lod + 1.0);
-  float erosion = 0.025 + 0.07 * (1.0 - detail.a) + 0.015 * (1.0 - fine);
-  float edge = smoothstep(erosion, erosion + 0.085, s.y);
-  s.y *= edge * mix(0.7, 1.65, detail.a);
+  float erosion = 0.025 + 0.12 * (1.0-lobes.a) + 0.025 * (1.0-fine);
+  float edge = smoothstep(erosion, erosion + 0.065, s.y);
+  s.y *= edge * mix(0.65,1.7,lobes.a);
   s.z *= mix(0.75, 1.25, fine);
   return s;
 }
 vec2 box(vec3 o, vec3 d) {
   vec3 safeD = mix(vec3(-1.0), vec3(1.0), greaterThanEqual(d, vec3(0))) * max(abs(d), vec3(1e-7));
-  vec3 a = (vec3(-0.5 * uSize.x, 0.0, -0.5 * uSize.z) - o) / safeD, b = (vec3(0.5 * uSize.x, uSize.y, 0.5 * uSize.z) - o) / safeD;
+  vec3 a = (vec3(-0.5 * uSize.x, 0.0, -0.5 * uSize.z) * uCloudScale - o) / safeD;
+  vec3 b = (vec3(0.5 * uSize.x, uSize.y, 0.5 * uSize.z) * uCloudScale - o) / safeD;
   vec3 n = min(a, b), f = max(a, b);
   return vec2(max(max(n.x, n.y), n.z), min(min(f.x, f.y), f.z));
 }
@@ -99,6 +114,11 @@ vec2 fireball(vec3 o, vec3 d) {  // sphere cut by the flat base plane
   vec3 oc = o - uFb.xyz;
   float b = dot(oc, d), h = b * b - dot(oc, oc) + uFb.w * uFb.w;
   if (h < 0.0) return vec2(1e30, -1e30);
+  vec3 surface = oc + d * max(-b-sqrt(h),0.0);
+  float billow = detailNoise(surface / max(3.0*uFb.w,1.0) + vec3(0,-uTime*0.03,0),0.0);
+  float radius = uFb.w * (0.955 + 0.045 * billow);
+  h = b*b-dot(oc,oc)+radius*radius;
+  if(h<0.0) return vec2(1e30,-1e30);
   vec2 t = vec2(-b - sqrt(h), -b + sqrt(h));
   if (abs(d.y) < 1e-7) {
     if (o.y < uFbParams.x) return vec2(1e30, -1e30);
@@ -113,6 +133,7 @@ void main() {
   vec3 o = uCam, d = normalize(wp.xyz / wp.w - o);
   // one glow light: grid emission (mip-reduced) + analytic fireball
   vec4 g = textureLod(uGlow, vec3(0.5), uGlowLod) * uCells * uGridOn;
+  g.y *= uCloudScale.y;
   float gP = g.x + uGlowA.x;
   vec3 gPos = vec3(0.0, (g.y + uGlowA.x * uGlowA.y) / max(gP, 1e-6), 0.0);
   vec3 gI = planckChroma(max((g.z + uGlowA.x * uGlowA.z) / max(gP, 1e-6), 500.0)) * gP / (4.0 * PI);
@@ -121,18 +142,31 @@ void main() {
   if (tg < 1e30) {  // snow
     vec3 p = o + d * tg, Lg = gPos - p;
     vec2 ts = box(p, uSunDir);
-    float sh = uGridOn > 0.5 && ts.x <= ts.y && ts.y > 0.0 ? texture(uLight, toUvw(p + uSunDir * max(ts.x, 0.0))).x : 1.0;
+    float sh = uGridOn > 0.5 && ts.x <= ts.y && ts.y > 0.0 ? texture(uLight, toUvw((p + uSunDir * max(ts.x, 0.0))/uCloudScale)).x : 1.0;
     float r2 = max(dot(Lg, Lg), 10000.0);
     vec3 normal = terrainNormal(p.xz);
     float grain = detailNoise(p / (12000.0 * sceneScale()), 1.0);
-    float snow = smoothstep(0.86, 0.98, normal.y) * mix(0.8, 1.0, grain);
-    vec3 alb = mix(vec3(0.17, 0.20, 0.23), vec3(0.78, 0.85, 0.93), snow);
-    alb *= mix(0.82, 1.05, grain);
-    vec3 E = uSun * max(dot(normal, uSunDir), 0.0) * sh + 1.7 * sky(normal)
-      + gI * max(dot(normal, Lg), 0.0) / (r2 * sqrt(r2));
+    float snow = smoothstep(0.80, 0.96, normal.y) * mix(0.92, 1.0, grain);
+    vec3 alb = mix(vec3(0.25, 0.28, 0.31), vec3(0.72, 0.78, 0.85), snow);
+    alb *= mix(0.94, 1.03, grain);
+    vec3 reflectedFlash = gI * max(dot(normal, Lg), 0.0) / (r2 * sqrt(r2));
+    // Compress reflected highlights separately so snow retains visible relief
+    // while the directly viewed fireball can still saturate the camera.
+    reflectedFlash /= 1.0 + dot(reflectedFlash, vec3(0.2126,0.7152,0.0722)) / 250.0;
+    vec3 E = uSun * max(dot(normal, uSunDir), 0.0) * sh + 1.7 * sky(normal) + reflectedFlash;
     bg = aerial(alb / PI * E, p, d);
   } else {
     bg = sky(d) + uSun * step(0.99998, dot(d, uSunDir)) / 6.8e-5;
+  }
+  float objectDepth = texture(uSceneDepth, vUv).r;
+  if (objectDepth < 1.0) {
+    vec4 objectPoint = uInvViewProj * vec4(vUv*2.0-1.0,objectDepth*2.0-1.0,1);
+    vec3 p = objectPoint.xyz / objectPoint.w;
+    float objectDistance = length(p-o);
+    if (objectDistance < tg) {
+      tg = objectDistance;
+      bg = aerial(texture(uSceneColor,vUv).rgb,p,d);
+    }
   }
   vec2 tf = fireball(o, d);
   float fbA = uFbParams.z > 0.0 && tf.x < tf.y && tf.y > 0.0 && tf.x < tg
@@ -157,17 +191,23 @@ void main() {
     float t = tb.x + dt * hash(vec3(gl_FragCoord.xy, 1.0));
     for (int i = 0; i < uSteps && t < tb.y; ++i, t += dt) {
       if (!fbDone && t > tf.x) { L += Tr * fbA * fbL; Tr *= 1.0 - fbA; fbDone = true; }
-      vec3 p = o + d * t, w = toUvw(p);
+      vec3 p = o + d * t, w = toUvw(p / uCloudScale);
       vec4 s = cloudSample(p, dt * 0.4);
-      float T = hotT(s, p.y), ext = extinction(s, T);
+      float T = hotT(s, p.y / uCloudScale.y), ext = extinction(s, T);
       if (ext < 1e-8) continue;
       vec3 sc = uExt.x * s.y * vec3(0.96, 0.96, 0.95) + uExt.y * s.z * vec3(0.66, 0.60, 0.52);
       vec3 Lg = gPos - p;
       float sunTr = clamp(texture(uLight, w).x, 0.0, 1.0);
-      float overhead = cloudSample(p + vec3(0, 0.8 * cellSize(), 0), dt * 0.4).y;
+      // Resolve the rounded surface lobes which are absent from the coarse
+      // light volume. Two local samples suffice; retain the long-range shadow.
+      float shadowStep = cellSize() * min(uCloudScale.x,uCloudScale.y);
+      float localDensity = cloudSample(p+uSunDir*shadowStep*0.6,dt*0.4).y
+        + cloudSample(p+uSunDir*shadowStep*1.8,dt*0.4).y;
+      sunTr = min(pow(sunTr,0.65),exp(-uExt.x*localDensity*shadowStep*0.65));
+      float overhead = cloudSample(p + vec3(0, 0.8 * cellSize() * uCloudScale.y, 0), dt * 0.4).y;
       float ambientVisibility = exp(-2.5 * overhead);
       // A softened second scattering lobe fills sunlit billows without flattening shadows.
-      vec3 sunLight = uSun * (sunTr * phase + 0.10 * pow(sunTr, 0.35) / (4.0 * PI));
+      vec3 sunLight = uSun * (sunTr * phase + 0.16 * pow(sunTr, 0.35) / (4.0 * PI));
       vec3 S = sc * (sunLight + amb * (0.45 + 0.55 * ambientVisibility)
         + gI / (4.0 * PI * max(dot(Lg, Lg), uFbParams.w * uFbParams.w)));
       if (T > 700.0) S += (ext - dot(sc, vec3(0.2126, 0.7152, 0.0722))) * blackbody(T);
