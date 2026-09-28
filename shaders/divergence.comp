@@ -1,0 +1,15 @@
+layout(binding = 0) uniform sampler3D uVel;
+layout(r32f, binding = 0) uniform writeonly image3D oDiv;
+// Mass flux rho(z) u; mirrored at the ground so no air passes through it.
+vec3 M(ivec3 c) {
+  vec3 u = texelFetch(uVel, clampC(c), 0).xyz;
+  if (c.y < 0) u.y = -u.y;
+  return u * atm(cellPos(c).y).y;
+}
+void main() {
+  ivec3 c = gid();
+  if (outside(c)) return;
+  float d = M(c + ivec3(1, 0, 0)).x - M(c - ivec3(1, 0, 0)).x + M(c + ivec3(0, 1, 0)).y - M(c - ivec3(0, 1, 0)).y +
+            M(c + ivec3(0, 0, 1)).z - M(c - ivec3(0, 0, 1)).z;
+  imageStore(oDiv, c, vec4(0.5 * d / cellSize()));
+}

@@ -1,0 +1,29 @@
+layout(binding = 0) uniform sampler3D uVel;
+layout(binding = 1) uniform sampler3D uSrc;
+layout(rgba32f, binding = 0) uniform writeonly image3D oDst;
+uniform float uDt, uRadK;
+uniform vec3 uDust;  // ground shock radius, dust source radius, pickup rate
+uniform int uMode;   // 0 = velocity, 1 = scalars (theta', smoke, dust)
+void main() {
+  ivec3 c = gid();
+  if (outside(c)) return;
+  vec3 p = cellPos(c), u = texelFetch(uVel, c, 0).xyz;
+  vec3 back = p - uDt * texture(uVel, toUvw(p - 0.5 * uDt * u)).xyz;
+  vec4 v = texture(uSrc, toUvw(back));
+  if (uMode == 1) {
+    v.x += atm(clamp(back.y, 0.0, uSize.y)).z - atm(p.y).z;  // total theta is conserved, not theta'
+    float Ta = atm(p.y).x, T = Ta + max(v.w, 0.0);
+    if (T > Ta + 1.0) {  // radiative cooling dT/dt = -k (T^4 - Ta^4), integrated exactly for the T^4 part
+      float Tn = pow(1.0 / (T * T * T) + 3.0 * uRadK * uDt * (1.0 - pow(Ta / T, 4.0)), -1.0 / 3.0);
+      v.w = max(Tn - Ta, 0.0);
+    }
+    vec3 q = toUvw(p);
+    v.xw *= exp(-uDt * 0.02 * max(smoothstep(0.85, 1.0, q.y), smoothstep(0.42, 0.5, max(abs(q.x - 0.5), abs(q.z - 0.5)))));
+    if (c.y == 0) {  // ground dust: blast-front kick plus afterwind pickup
+      float r = length(p.xz), ring = exp(-pow((r - uDust.x) / (2.0 * cellSize()), 2.0));
+      v.z += uDt * uDust.z * (length(u.xz) + 40.0 * ring) * (1.0 - smoothstep(0.5 * uDust.y, uDust.y, r));
+    }
+    v.yz = clamp(v.yz, 0.0, 1.0);
+  }
+  imageStore(oDst, c, v);
+}

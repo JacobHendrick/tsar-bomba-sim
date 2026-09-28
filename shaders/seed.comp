@@ -1,0 +1,20 @@
+layout(rgba32f, binding = 0) uniform writeonly image3D oVel;
+layout(rgba32f, binding = 1) uniform writeonly image3D oScal;
+uniform vec3 uCenter, uDust;  // uDust.x: ground radius already swept by the shock
+uniform float uRadius, uBase, uTemp, uHeat;
+void main() {
+  ivec3 c = gid();
+  if (outside(c)) return;
+  vec3 p = cellPos(c);
+  float h = cellSize();
+  float n = 0.6 * noise(p / (0.4 * uRadius)) + 0.4 * noise(p / (0.15 * uRadius) + 7.0);
+  float r = length(p - uCenter) / uRadius + 0.3 * (n - 0.5);
+  float inside = (1.0 - smoothstep(0.8, 1.0 + 0.5 * h / uRadius, r)) * smoothstep(uBase - 0.5 * h, uBase + 0.5 * h, p.y);
+  vec4 a = atm(p.y);
+  // hot gas is T/Ta times less dense: heat per volume at ambient density is theta (1 - Ta/T)
+  float thp = inside * uHeat * a.z * (1.0 - a.x / uTemp);
+  float dust = c.y == 0 && length(p.xz) < uDust.x ? 0.25 : 0.0;
+  vec3 v = inside * vec3(8.0 * (n - 0.5), 30.0, 8.0 * (hash(p) - 0.5));
+  imageStore(oScal, c, vec4(thp, inside, dust, inside * (uTemp - a.x)));
+  imageStore(oVel, c, vec4(v, 0.0));
+}

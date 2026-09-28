@@ -1,0 +1,23 @@
+layout(binding = 0) uniform sampler3D uVel;
+layout(binding = 1) uniform sampler3D uScal;
+layout(binding = 2) uniform sampler3D uCurl;
+layout(rgba32f, binding = 0) uniform writeonly image3D oVel;
+uniform float uDt, uVort;
+float W(ivec3 c) { return texelFetch(uCurl, clampC(c), 0).w; }
+void main() {
+  ivec3 c = gid();
+  if (outside(c)) return;
+  vec3 p = cellPos(c), q = toUvw(p);
+  vec3 u = texelFetch(uVel, c, 0).xyz;
+  float thp = texelFetch(uScal, c, 0).x, thb = atm(p.y).z;
+  // g(theta - thetabar)/thetabar; the max() term keeps it bounded by g for fireball-hot gas
+  float b = G * thp / (thb + max(thp, 0.0));
+  vec3 eta = vec3(W(c + ivec3(1, 0, 0)) - W(c - ivec3(1, 0, 0)), W(c + ivec3(0, 1, 0)) - W(c - ivec3(0, 1, 0)),
+                  W(c + ivec3(0, 0, 1)) - W(c - ivec3(0, 0, 1)));
+  vec3 conf = uVort * cellSize() * cross(eta / (length(eta) + 1e-9), texelFetch(uCurl, c, 0).xyz);
+  u += uDt * (vec3(0.0, b, 0.0) + conf);
+  float sponge = max(smoothstep(0.85, 1.0, q.y), smoothstep(0.42, 0.5, max(abs(q.x - 0.5), abs(q.z - 0.5))));
+  u *= exp(-uDt * 0.02 * sponge) * min(1.0, 400.0 / (length(u) + 1e-6));
+  if (c.y == 0) u.y = max(u.y, 0.0);
+  imageStore(oVel, c, vec4(u, 0.0));
+}

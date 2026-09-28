@@ -1,0 +1,14 @@
+layout(binding = 0) uniform sampler3D uVel;
+layout(binding = 1) uniform sampler3D uP;
+layout(rgba32f, binding = 0) uniform writeonly image3D oVel;
+float P(ivec3 nb, float pc) { return nb.y < 0 ? pc : inGrid(nb) ? texelFetch(uP, nb, 0).x : 0.0; }
+void main() {
+  ivec3 c = gid();
+  if (outside(c)) return;
+  float pc = texelFetch(uP, c, 0).x;
+  vec3 g = vec3(P(c + ivec3(1, 0, 0), pc) - P(c - ivec3(1, 0, 0), pc), P(c + ivec3(0, 1, 0), pc) - P(c - ivec3(0, 1, 0), pc),
+                P(c + ivec3(0, 0, 1), pc) - P(c - ivec3(0, 0, 1), pc));
+  vec3 u = texelFetch(uVel, c, 0).xyz - 0.5 * g / cellSize();
+  if (c.y == 0) u.y = max(u.y, 0.0);
+  imageStore(oVel, c, vec4(u, 0.0));
+}

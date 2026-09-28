@@ -1,0 +1,22 @@
+layout(binding = 1) uniform sampler3D uScal;
+layout(r32f, binding = 0) uniform writeonly image3D oLight;
+layout(rgba32f, binding = 1) uniform writeonly image3D oGlow;
+uniform vec3 uSunDir;
+void main() {
+  ivec3 c = gid();
+  if (outside(c)) return;
+  vec3 p = cellPos(c);
+  float h = cellSize(), tau = 0.0;
+  for (int i = 1; i < 256; ++i) {
+    vec3 q = p + uSunDir * (1.5 * h * float(i)), w = toUvw(q);
+    if (any(lessThan(w, vec3(0.0))) || any(greaterThan(w, vec3(1.0)))) break;
+    vec4 s = texture(uScal, w);
+    tau += extinction(s, hotT(s, q.y)) * 1.5 * h;
+  }
+  imageStore(oLight, c, vec4(exp(-tau)));
+  vec4 s = texelFetch(uScal, c, 0);
+  float T = hotT(s, p.y), Ta = atm(p.y).x;
+  // thermal power of the cell; min(kh, 1) caps optically thick cells at surface emission
+  float P = 4.0 * SIGMA * max(T * T * T * T - Ta * Ta * Ta * Ta, 0.0) * h * h * min(extinction(s, T) * h, 1.0) * visibleGlow(T);
+  imageStore(oGlow, c, vec4(P, P * p.y, P * T, 0.0));
+}

@@ -1,0 +1,19 @@
+layout(binding = 0) uniform sampler3D uP;
+layout(binding = 1) uniform sampler3D uDiv;
+layout(r32f, binding = 0) uniform writeonly image3D oP;
+// Jacobi sweep for div(rho grad phi) = div(rho u*): Neumann at the ground, phi = 0 on open sides/top.
+void main() {
+  ivec3 c = gid();
+  if (outside(c)) return;
+  float h = cellSize(), y = cellPos(c).y;
+  float rh = atm(y).y, rw[6] = float[](rh, rh, rh, rh, atm(y + 0.5 * h).y, atm(y - 0.5 * h).y);
+  const ivec3 o[6] = ivec3[](ivec3(1, 0, 0), ivec3(-1, 0, 0), ivec3(0, 0, 1), ivec3(0, 0, -1), ivec3(0, 1, 0), ivec3(0, -1, 0));
+  float s = 0.0, w = 0.0;
+  for (int i = 0; i < 6; ++i) {
+    ivec3 nb = c + o[i];
+    if (nb.y < 0) continue;
+    s += rw[i] * (inGrid(nb) ? texelFetch(uP, nb, 0).x : 0.0);
+    w += rw[i];
+  }
+  imageStore(oP, c, vec4((s - h * h * texelFetch(uDiv, c, 0).x) / w));
+}

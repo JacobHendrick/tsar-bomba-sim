@@ -1,0 +1,25 @@
+// Tileable, deterministic render detail. This texture does not affect the solver.
+layout(rgba16f, binding = 0) uniform writeonly image3D oDetail;
+float periodicNoise(vec3 p, float period) {
+  vec3 i = floor(p), f = fract(p);
+  f = f * f * (3.0 - 2.0 * f);
+  float value = 0.0;
+  for (int z = 0; z < 2; ++z)
+    for (int y = 0; y < 2; ++y)
+      for (int x = 0; x < 2; ++x) {
+        vec3 corner = vec3(x, y, z);
+        vec3 weight = mix(1.0 - f, f, corner);
+        value += hash(mod(i + corner, period)) * weight.x * weight.y * weight.z;
+      }
+  return value;
+}
+void main() {
+  ivec3 c = gid();
+  if (outside(c)) return;
+  vec3 p = (vec3(c) + 0.5) / vec3(uN);
+  float a = periodicNoise(p * 8.0, 8.0);
+  float b = periodicNoise(p * 16.0 + 3.0, 16.0);
+  float d = periodicNoise(p * 32.0 + 7.0, 32.0);
+  float e = periodicNoise(p * 64.0 + 13.0, 64.0);
+  imageStore(oDetail, c, vec4(a, b, d, 0.53 * a + 0.27 * b + 0.14 * d + 0.06 * e));
+}
